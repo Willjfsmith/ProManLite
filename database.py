@@ -83,7 +83,8 @@ class ProjectDB:
     def get_all_projects(status: str = 'active') -> pd.DataFrame:
         """Get all projects"""
         conn = get_connection()
-        df = pd.read_sql(f"SELECT * FROM projects WHERE status='{status}' ORDER BY created_date DESC", conn)
+        df = pd.read_sql("SELECT * FROM projects WHERE status=? ORDER BY created_date DESC", conn, params=(status,))
+
         conn.close()
         return df
     
