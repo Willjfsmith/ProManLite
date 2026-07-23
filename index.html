@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Team Skills</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --panel-2: #f0f0ee;
+    --border: #e3e3df;
+    --text: #23221f;
+    --muted: #75736d;
+    --accent: #b5502e;
+    --accent-soft: #f3e6df;
+    --user-bubble: #23221f;
+    --user-text: #f7f7f5;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.04);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1917;
+      --panel: #232220;
+      --panel-2: #2b2a27;
+      --border: #383632;
+      --text: #ece9e3;
+      --muted: #9c988f;
+      --accent: #e0764f;
+      --accent-soft: #3a2a22;
+      --user-bubble: #e0764f;
+      --user-text: #1a1917;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; height: 100vh; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Sidebar */
+  aside {
+    width: 300px; flex-shrink: 0; background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  .brand {
+    padding: 20px 20px 14px; border-bottom: 1px solid var(--border);
+  }
+  .brand h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
+  .brand p { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+  .skill-list { flex: 1; overflow-y: auto; padding: 12px; }
+  .group-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 14px 8px 6px; font-weight: 600;
+  }
+  .group-label:first-child { margin-top: 4px; }
+  .skill {
+    display: flex; gap: 11px; align-items: flex-start;
+    padding: 10px 11px; border-radius: 11px; cursor: pointer;
+    border: 1px solid transparent; transition: background .12s, border-color .12s;
+  }
+  .skill:hover { background: var(--panel-2); }
+  .skill.active { background: var(--accent-soft); border-color: var(--accent); }
+  .skill .emoji { font-size: 19px; line-height: 1.2; }
+  .skill .meta { min-width: 0; }
+  .skill .name { font-size: 13.5px; font-weight: 600; }
+  .skill .blurb { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+  .sidebar-foot {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    font-size: 11.5px; color: var(--muted);
+  }
+
+  /* Main */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar {
+    height: 60px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: 0 22px; background: var(--panel);
+  }
+  .topbar .emoji { font-size: 22px; }
+  .topbar .t-name { font-weight: 650; font-size: 15px; }
+  .topbar .t-blurb { font-size: 12.5px; color: var(--muted); }
+  .topbar .spacer { flex: 1; }
+  .btn {
+    font: inherit; font-size: 13px; padding: 7px 13px; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    cursor: pointer; transition: background .12s;
+  }
+  .btn:hover { background: var(--border); }
+
+  .banner {
+    background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--accent);
+    padding: 9px 22px; font-size: 13px;
+  }
+
+  .thread { flex: 1; overflow-y: auto; padding: 26px 22px; }
+  .thread-inner { max-width: 780px; margin: 0 auto; }
+
+  .empty {
+    text-align: center; color: var(--muted); margin-top: 8vh;
+  }
+  .empty .big { font-size: 40px; }
+  .empty h2 { color: var(--text); font-weight: 650; margin: 14px 0 6px; font-size: 20px; }
+  .empty p { margin: 0 auto; max-width: 440px; font-size: 14px; line-height: 1.55; }
+  .starters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px; }
+  .starter {
+    font-size: 13px; padding: 8px 13px; border-radius: 20px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    max-width: 340px; text-align: left; transition: border-color .12s;
+  }
+  .starter:hover { border-color: var(--accent); }
+
+  .msg { margin-bottom: 22px; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .bubble {
+    padding: 12px 16px; border-radius: var(--radius); max-width: 100%;
+    line-height: 1.6; font-size: 14.5px; box-shadow: var(--shadow);
+  }
+  .msg.user .bubble {
+    background: var(--user-bubble); color: var(--user-text);
+    border-bottom-right-radius: 5px; max-width: 82%; white-space: pre-wrap;
+  }
+  .msg.assistant .bubble {
+    background: var(--panel); border: 1px solid var(--border);
+    border-bottom-left-radius: 5px; width: 100%;
+  }
+  .bubble.thinking { color: var(--muted); font-style: italic; }
+
+  /* rendered markdown */
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md p { margin: 0 0 10px; }
+  .md h1, .md h2, .md h3 { margin: 16px 0 8px; line-height: 1.3; }
+  .md h1 { font-size: 20px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15px; }
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+  .md li { margin: 3px 0; }
+  .md code {
+    background: var(--panel-2); padding: 1.5px 5px; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  }
+  .md pre {
+    background: var(--panel-2); padding: 12px 14px; border-radius: 10px;
+    overflow-x: auto; margin: 0 0 10px;
+  }
+  .md pre code { background: none; padding: 0; }
+  .md table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 13.5px; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .md th { background: var(--panel-2); font-weight: 600; }
+  .md a { color: var(--accent); }
+  .md blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+
+  .files { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .file-chip {
+    display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+    background: var(--accent-soft); color: var(--text); border: 1px solid var(--accent);
+    padding: 8px 13px; border-radius: 10px; font-size: 13px; font-weight: 550;
+  }
+  .file-chip:hover { filter: brightness(1.03); }
+  .file-chip .dl { color: var(--accent); }
+
+  .cursor::after {
+    content: "▋"; color: var(--accent); animation: blink 1s steps(2) infinite; margin-left: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Composer */
+  .composer { border-top: 1px solid var(--border); background: var(--panel); padding: 14px 22px 18px; }
+  .composer-inner { max-width: 780px; margin: 0 auto; }
+  .input-row {
+    display: flex; gap: 10px; align-items: flex-end;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 8px 8px 8px 14px;
+  }
+  .input-row:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1; border: none; background: none; resize: none; font: inherit; font-size: 14.5px;
+    color: var(--text); outline: none; max-height: 200px; line-height: 1.5; padding: 6px 0;
+  }
+  .send {
+    width: 38px; height: 38px; flex-shrink: 0; border: none; border-radius: 10px;
+    background: var(--accent); color: #fff; cursor: pointer; font-size: 17px;
+    display: grid; place-items: center; transition: opacity .12s;
+  }
+  .send:disabled { opacity: .4; cursor: default; }
+  .hint { font-size: 11.5px; color: var(--muted); text-align: center; margin-top: 8px; }
+
+  @media (max-width: 760px) {
+    aside { display: none; }
+  }
+</style>
+</head>
+<body>
+  <aside>
+    <div class="brand">
+      <h1>Team Skills</h1>
+      <p>Pick a skill and start working with Claude.</p>
+    </div>
+    <div class="skill-list" id="skillList"></div>
+    <div class="sidebar-foot" id="sidebarFoot">Powered by Claude</div>
+  </aside>
+
+  <main>
+    <div class="topbar" id="topbar">
+      <span class="emoji" id="tEmoji">💬</span>
+      <div>
+        <div class="t-name" id="tName">Team Skills</div>
+        <div class="t-blurb" id="tBlurb">Select a skill to begin.</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn" id="resetBtn" title="Start a fresh conversation">New chat</button>
+    </div>
+
+    <div class="banner" id="banner" style="display:none"></div>
+
+    <div class="thread" id="thread">
+      <div class="thread-inner" id="threadInner"></div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-row">
+          <textarea id="input" rows="1" placeholder="Message the skill…"></textarea>
+          <button class="send" id="send" title="Send">↑</button>
+        </div>
+        <div class="hint">Enter to send · Shift+Enter for a new line</div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const state = {
+  skills: [],
+  current: null,
+  sessionId: null,
+  streaming: false,
+};
+
+// stable per-browser session id
+state.sessionId = localStorage.getItem("ts_session");
+if (!state.sessionId) {
+  state.sessionId = "s_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  localStorage.setItem("ts_session", state.sessionId);
+}
+
+const el = (id) => document.getElementById(id);
+const threadInner = el("threadInner");
+const thread = el("thread");
+const input = el("input");
+
+// ---------- tiny, safe markdown renderer ----------
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function inlineMd(s) {
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+function renderMd(text) {
+  const lines = text.split("\n");
+  let html = "", i = 0;
+  while (i < lines.length) {
+    let line = lines[i];
+
+    // fenced code
+    if (/^```/.test(line)) {
+      let code = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { code.push(lines[i]); i++; }
+      i++;
+      html += "<pre><code>" + esc(code.join("\n")) + "</code></pre>";
+      continue;
+    }
+    // table
+    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i+1].includes("-")) {
+      const parseRow = (r) => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(c => c.trim());
+      const headers = parseRow(line);
+      i += 2;
+      let rows = [];
+      while (i < lines.length && lines[i].includes("|")) { rows.push(parseRow(lines[i])); i++; }
+      html += "<table><thead><tr>" + headers.map(h => "<th>" + inlineMd(h) + "</th>").join("") + "</tr></thead><tbody>";
+      html += rows.map(r => "<tr>" + r.map(c => "<td>" + inlineMd(c) + "</td>").join("") + "</tr>").join("");
+      html += "</tbody></table>";
+      continue;
+    }
+    // headings
+    let m = line.match(/^(#{1,3})\s+(.*)$/);
+    if (m) { const lvl = m[1].length; html += `<h${lvl}>` + inlineMd(m[2]) + `</h${lvl}>`; i++; continue; }
+    // blockquote
+    if (/^>\s?/.test(line)) {
+      let quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { quote.push(lines[i].replace(/^>\s?/, "")); i++; }
+      html += "<blockquote>" + inlineMd(quote.join(" ")) + "</blockquote>";
+      continue;
+    }
+    // unordered list
+    if (/^\s*[-*]\s+/.test(line)) {
+      let items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*]\s+/, "")); i++; }
+      html += "<ul>" + items.map(it => "<li>" + inlineMd(it) + "</li>").join("") + "</ul>";
+      continue;
+    }
+    // ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      let items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+      html += "<ol>" + items.map(it => "<li>" + inlineMd(it) + "</li>").join("") + "</ol>";
+      continue;
+    }
+    // blank
+    if (line.trim() === "") { i++; continue; }
+    // paragraph
+    let para = [line]; i++;
+    while (i < lines.length && lines[i].trim() !== "" && !/^(#{1,3}\s|[-*]\s|\d+\.\s|>|```)/.test(lines[i]) && !lines[i].includes("|")) {
+      para.push(lines[i]); i++;
+    }
+    html += "<p>" + inlineMd(para.join("\n")) + "</p>";
+  }
+  return html;
+}
+
+// ---------- rendering ----------
+function renderSkills() {
+  const list = el("skillList");
+  list.innerHTML = "";
+  const groups = [
+    ["Assistants", state.skills.filter(s => s.type === "prompt")],
+    ["Document builders", state.skills.filter(s => s.type === "document")],
+  ];
+  for (const [label, items] of groups) {
+    if (!items.length) continue;
+    const lbl = document.createElement("div");
+    lbl.className = "group-label"; lbl.textContent = label;
+    list.appendChild(lbl);
+    for (const s of items) {
+      const div = document.createElement("div");
+      div.className = "skill" + (state.current && state.current.id === s.id ? " active" : "");
+      div.innerHTML = `<span class="emoji">${s.emoji}</span>
+        <div class="meta"><div class="name">${s.name}</div><div class="blurb">${s.blurb}</div></div>`;
+      div.onclick = () => selectSkill(s.id);
+      list.appendChild(div);
+    }
+  }
+}
+
+function selectSkill(id) {
+  const s = state.skills.find(x => x.id === id);
+  if (!s) return;
+  state.current = s;
+  el("tEmoji").textContent = s.emoji;
+  el("tName").textContent = s.name;
+  el("tBlurb").textContent = s.blurb;
+  input.placeholder = "Message " + s.name + "…";
+  renderSkills();
+  showEmpty();
+}
+
+function showEmpty() {
+  const s = state.current;
+  threadInner.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "empty";
+  const starters = (s.starters || []).map(t =>
+    `<button class="starter">${t.replace(/</g, "&lt;")}</button>`).join("");
+  wrap.innerHTML = `<div class="big">${s.emoji}</div>
+    <h2>${s.name}</h2><p>${s.blurb}</p>
+    ${s.produces_files ? '<p style="margin-top:10px;font-size:12.5px">Generated files appear as download buttons in the reply.</p>' : ''}
+    <div class="starters">${starters}</div>`;
+  threadInner.appendChild(wrap);
+  wrap.querySelectorAll(".starter").forEach((b, idx) => {
+    b.onclick = () => { input.value = s.starters[idx]; input.focus(); autoGrow(); };
+  });
+}
+
+function addMessage(role) {
+  const empty = threadInner.querySelector(".empty");
+  if (empty) empty.remove();
+  const msg = document.createElement("div");
+  msg.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  msg.appendChild(bubble);
+  threadInner.appendChild(msg);
+  thread.scrollTop = thread.scrollHeight;
+  return bubble;
+}
+
+function scrollDown() {
+  const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120;
+  if (near) thread.scrollTop = thread.scrollHeight;
+}
+
+// ---------- sending ----------
+async function send() {
+  if (state.streaming || !state.current) return;
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = ""; autoGrow();
+  const userBubble = addMessage("user");
+  userBubble.textContent = text;
+
+  const bubble = addMessage("assistant");
+  bubble.classList.add("thinking", "cursor");
+  bubble.textContent = "Thinking…";
+
+  state.streaming = true;
+  el("send").disabled = true;
+
+  let acc = "";
+  const files = [];
+  let started = false;
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.sessionId, skill_id: state.current.id, message: text }),
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const chunk = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+        const line = chunk.replace(/^data: /, "");
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+
+        if (ev.type === "text") {
+          if (!started) { started = true; bubble.classList.remove("thinking"); acc = ""; }
+          acc += ev.text;
+          bubble.innerHTML = '<div class="md">' + renderMd(acc) + "</div>";
+          scrollDown();
+        } else if (ev.type === "file") {
+          files.push(ev);
+        } else if (ev.type === "error") {
+          bubble.classList.remove("thinking");
+          bubble.innerHTML = '<div class="md" style="color:var(--accent)">⚠️ ' + esc(ev.message) + "</div>";
+        }
+      }
+    }
+  } catch (e) {
+    bubble.classList.remove("thinking");
+    bubble.innerHTML = '<div class="md" style="color:var(--accent)">⚠️ Connection error: ' + esc(String(e)) + "</div>";
+  } finally {
+    bubble.classList.remove("cursor", "thinking");
+    if (files.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "files";
+      for (const f of files) {
+        const a = document.createElement("a");
+        a.className = "file-chip";
+        a.href = "/api/files/" + encodeURIComponent(f.file_id);
+        a.setAttribute("download", f.name);
+        a.innerHTML = `<span>📎 ${esc(f.name)}</span><span class="dl">Download</span>`;
+        wrap.appendChild(a);
+      }
+      bubble.appendChild(wrap);
+    }
+    if (!started && !bubble.querySelector(".md")) {
+      bubble.innerHTML = '<div class="md" style="color:var(--muted)">(no response)</div>';
+    }
+    state.streaming = false;
+    el("send").disabled = false;
+    scrollDown();
+  }
+}
+
+// ---------- input behaviour ----------
+function autoGrow() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+}
+input.addEventListener("input", autoGrow);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+el("send").onclick = send;
+el("resetBtn").onclick = async () => {
+  if (!state.current) return;
+  await fetch("/api/reset", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: state.sessionId, skill_id: state.current.id }),
+  });
+  showEmpty();
+};
+
+// ---------- boot ----------
+async function boot() {
+  const resp = await fetch("/api/skills");
+  const data = await resp.json();
+  state.skills = data.skills;
+  if (!data.configured) {
+    const b = el("banner");
+    b.style.display = "block";
+    b.textContent = "⚠️ No ANTHROPIC_API_KEY configured on the server — chats will not work until it is set.";
+  }
+  renderSkills();
+  if (state.skills.length) selectSkill(state.skills[0].id);
+}
+boot();
+</script>
+</body>
+</html>
