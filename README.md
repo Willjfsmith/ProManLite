@@ -12,7 +12,7 @@ page and drop in files.
 
 | Tool | Upload | You get back |
 |------|--------|--------------|
-| Drawing Review | drawings (+ optional reference/standards) | marked-up PDF(s) + a review register `.xlsx` |
+| Drawing Review | drawings (+ optional reference/standards) | marked-up PDF(s) — numbered red markers + a REVIEW COMMENTS panel per sheet (register on request) |
 | Drawing Register | a set of drawings | a title-block register `.xlsx` |
 | P&ID Tag Extract | P&IDs | a categorised tag/line/equipment register `.xlsx` |
 | Document Reviewer | a spec/report (+ optional standards) | a findings register `.xlsx` + written review |

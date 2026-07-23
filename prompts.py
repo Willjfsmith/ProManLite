@@ -51,34 +51,109 @@ _REFERENCE = _zone(
 )
 
 
+# The real drawing-review markup approach: PyMuPDF, numbered red markers +
+# a "REVIEW COMMENTS" panel whose height hugs its wrapped content. Handed to
+# Claude verbatim so the sandbox reproduces the packaged skill's output.
+_MARKUP_SNIPPET = '''\
+import fitz, textwrap
+RED=(0.85,0.08,0.08); WHITE=(1,1,1); DARK=(0.1,0.1,0.1)
+
+# comments = [(marker_fx, marker_fy, "comment text"), ...]  fractions of page W/H
+# panel = (x0_frac, y0_frac, x1_frac)  -> height auto from content
+def mark_sheet(page, comments, panel):
+    W,H = page.rect.width, page.rect.height
+    X0,X1,Y0 = panel[0]*W, panel[2]*W, panel[1]*H
+    hh, fs, pad = 20, 8.5, 6
+    lh = fs*1.30
+    chars = int((X1-X0-30)/(fs*0.50))
+    wrapped = [textwrap.wrap(t, chars) or [''] for _,_,t in comments]
+    total = hh + pad + sum(len(w)*lh + 5 for w in wrapped) + pad
+    R = fitz.Rect(X0, Y0, X1, Y0+total)
+    page.draw_rect(R, color=RED, fill=WHITE, width=1.6, fill_opacity=0.9)
+    page.draw_rect(fitz.Rect(R.x0,R.y0,R.x1,R.y0+hh), color=RED, fill=RED, width=0)
+    page.insert_textbox(fitz.Rect(R.x0+6,R.y0+4,R.x1-4,R.y0+hh),
+        "REVIEW COMMENTS  -  General review (not for construction)",
+        fontname="hebo", fontsize=8.5, color=WHITE)
+    y = R.y0+hh+pad
+    for i, lines in enumerate(wrapped, 1):
+        boxh = len(lines)*lh; by = y+lh*0.42
+        page.draw_circle((R.x0+12,by), 7, color=WHITE, fill=RED, width=0)
+        page.insert_text((R.x0+(9.2 if i<10 else 6.5),by+3.1), str(i),
+                         fontname="hebo", fontsize=8.5, color=WHITE)
+        page.insert_textbox(fitz.Rect(R.x0+24,y-1,R.x1-6,y+boxh+6),
+                            comments[i-1][2], fontname="helv", fontsize=fs, color=DARK)
+        y += boxh + 5
+    for i,(fx,fy,_) in enumerate(comments, 1):
+        cx,cy = fx*W, fy*H
+        page.draw_circle((cx,cy), 11, color=WHITE, fill=RED, width=1.2)
+        page.insert_text((cx-(3.4 if i<10 else 6.8),cy+4.2), str(i),
+                         fontname="hebo", fontsize=12, color=WHITE)
+
+doc = fitz.open("drawing.pdf")
+mark_sheet(doc[0], comments, panel)
+doc.save("drawing (REVIEW MARKUP).pdf")
+'''
+
+
 SKILLS = [
     {
         "id": "drawing-review",
         "name": "Drawing Review",
         "emoji": "📐",
         "type": "workshop",
-        "blurb": "Upload drawings; get marked-up PDFs and a review register.",
-        "deliverable": "Marked-up PDF(s) with numbered comments + a review register (.xlsx)",
+        "blurb": "Upload drawings; get marked-up PDFs with numbered comments stamped on the sheets.",
+        "deliverable": "Marked-up PDF(s) — numbered red markers + a REVIEW COMMENTS panel per sheet",
         "inputs": [_REVIEW_DRAWINGS, _REFERENCE],
-        "instructions_placeholder": "e.g. Civil/structural review. Focus on dimensioning, clashes, and missing details. Ignore drafting-style nitpicks.",
+        "instructions_placeholder": "e.g. General good-practice civil/earthworks review. (Say 'also give me a register' if you want a spreadsheet as well.)",
         "system": (
             "You are a senior engineering drawing reviewer (civil, structural, mechanical, "
-            "P&ID, earthworks). Review each uploaded drawing carefully using the images you "
-            "are shown. For every drawing:\n"
-            "1. Identify substantive review comments — errors, omissions, clashes, unclear "
-            "details, code/standard issues. Number them.\n"
-            "2. Produce a MARKED-UP copy of each PDF: stamp a small numbered marker near the "
-            "relevant feature and add a commentary panel listing the numbered comments on the "
-            "sheet. Use pypdf/reportlab (or pdfplumber + reportlab overlay). Keep the original "
-            "drawing legible.\n"
-            "3. Build a review register (.xlsx) with columns: No., Drawing, Sheet, Location, "
-            "Comment, Severity (High/Med/Low), Discipline, Suggested action.\n"
-            "Save all outputs as files. Be specific and reference what you actually see — never "
-            "invent details you cannot verify from the drawing. If a reference file defines a "
-            "register format or standard, follow it."
+            "P&ID, earthworks).\n\n"
+            "DELIVERABLE — the default and primary output is MARKED-UP PDFs, one per input "
+            "sheet, NOT a spreadsheet. Only ALSO build a comment register (.xlsx) if the "
+            "user's instructions explicitly ask for one.\n\n"
+            "For each uploaded drawing:\n"
+            "1. Read the sheet carefully from the images shown to you. CAD-exported drawings "
+            "are usually vectorised, so text extraction is unreliable — rely on vision, and "
+            "look closely at the title block, notes, quantity tables and small callouts. Use "
+            "pdfplumber/PyMuPDF text extraction only as a backstop.\n"
+            "2. Find review comments across these lenses:\n"
+            "   - Document control: title-block number vs file name, revision/status, blank "
+            "Drawn/Checked/Designed/Approved fields, section & detail cross-references.\n"
+            "   - Setout / survey: datum, coordinate system/zone placeholders (e.g. 'Zone XX'), "
+            "missing setout tables, site-confirm/LiDAR holds.\n"
+            "   - Quantities: spurious precision, cut/fill balance, missing strip/bulking/"
+            "compaction allowances, consistency of volumes with notes.\n"
+            "   - Drafting: cross-reference sweep, label legibility, north/scale.\n"
+            "   - Design/geometry: grades, batters (ratio vs %), freeboard/levels, widths vs "
+            "design vehicle, liner/subgrade/anchor consistency.\n"
+            "   - Spellcheck: check ALL text on every sheet — notes, labels, legends, title "
+            "block, callouts, table headers, revision descriptions. Flag typos (e.g. "
+            "'CRITITAL' -> 'CRITICAL'). Do NOT flag valid engineering abbreviations, tags, "
+            "drawing numbers or unit symbols. Add each spelling issue as its own numbered "
+            "marker on the offending text.\n"
+            "   Only assert an error once you have confirmed it; otherwise phrase the comment "
+            "as 'Confirm ...'.\n"
+            "3. Stamp the markup with PyMuPDF so vector content is PRESERVED (do NOT rasterise "
+            "the whole sheet). First run `pip install pymupdf` in the sandbox. Place a numbered "
+            "red circle marker on each feature being commented on, and a red-bordered "
+            "'REVIEW COMMENTS' panel in a genuinely empty area of the sheet with the matching "
+            "numbered commentary. Keep marker numbering consistent between the on-drawing "
+            "markers and the panel. Marker positions are fractions of page width/height read "
+            "off the sheet. Use this reference implementation:\n\n```python\n"
+            + _MARKUP_SNIPPET +
+            "```\n\n"
+            "If PyMuPDF cannot be installed, fall back to a vector overlay built with reportlab "
+            "and merged onto the original with pypdf (keeps the base drawing's vectors).\n"
+            "4. Save each output as '<original name> (REVIEW MARKUP).pdf', keeping the drawing "
+            "number. If a file can't be overwritten, save under a fresh name rather than "
+            "failing.\n\n"
+            "After producing the files, give a short written summary of the headline issues and "
+            "offer a spreadsheet register as an optional extra. Use ratios (1:2 / 1:3) and "
+            "standard units in commentary to match drawing notes. If a reference file defines a "
+            "design basis, spec or drafting standard, review against it."
         ),
         "starters": [
-            "General QA review — flag anything that would cause an RFI or rework.",
+            "General good-practice review — flag anything that would cause an RFI or rework.",
             "Structural focus: check connections, member sizes, and load notes.",
         ],
     },
