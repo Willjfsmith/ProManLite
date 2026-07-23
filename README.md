@@ -55,7 +55,10 @@ attached this way today).
 index.html   → single-page UI (upload zones, run cards, no build step)
 main.py      → FastAPI server: serves the UI + a multipart run API (SSE stream)
 runner.py    → Anthropic SDK: uploads, sandbox run, output-file capture
-prompts.py   → the skill registry — the one file you edit to add/curate tools
+prompts.py   → loads the skills/ folder into the catalogue
+skills/       → one folder per tool, each a SKILL.md (this is what you edit)
+api/index.py → Vercel entry point (re-exports the app)
+vercel.json  → Vercel config (routing + function timeout)
 ```
 
 No database and no login by design — run it behind your own network, VPN, or SSO
@@ -75,6 +78,34 @@ python main.py            # or: uvicorn main:app --reload --port 8000
 Open http://localhost:8000 — without a key the page loads and shows a banner but
 can't run.
 
+## Deploy on Vercel
+
+The repo is Vercel-ready (`api/index.py` + `vercel.json`):
+
+1. Push the repo to GitHub and **Import Project** in Vercel.
+2. In **Settings → Environment Variables**, add `ANTHROPIC_API_KEY` (use the key
+   from the **work** Anthropic org so runs bill there — nobody on the team needs
+   their own account).
+3. Deploy. Adding a skill later = commit a new `skills/<name>/SKILL.md` and let
+   Vercel redeploy; the new page appears.
+
+**Vercel-specific caveats** (worth knowing before you rely on it):
+
+- **Use the Pro plan.** Vercel functions time out at 60s on Hobby and up to 300s
+  on Pro (`maxDuration` in `vercel.json`). A drawing review with markup can run a
+  few minutes, so Hobby will cut it off; even on Pro a large batch may be tight.
+- **No live token streaming.** Vercel's Python runtime buffers the response, so
+  the UI shows a spinner and then the finished result (files + summary) rather
+  than streaming text as it's produced. Everything still works; it just isn't
+  incremental.
+- **Follow-up runs may not reuse context.** Serverless instances don't keep
+  in-memory state reliably, so treat each run as independent (re-upload files for
+  a follow-up).
+
+If those bite, the **Dockerfile** below runs the exact same app on a persistent
+host (Railway, Render, Fly.io, Cloud Run, a VM) where streaming, long runs, and
+follow-up context all work — no code changes.
+
 ## Run it with Docker
 
 ```bash
@@ -82,10 +113,10 @@ docker build -t team-skills .
 docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8000:8000 team-skills
 ```
 
-## Deploy
+## Deploy anywhere else
 
-Standard ASGI app — runs on any VM (`uvicorn`/`gunicorn`), container platform
-(Cloud Run, ECS, Fly.io, Render), or behind nginx. Two must-dos:
+Standard ASGI app — runs on any VM (`uvicorn`/`gunicorn`) or container platform.
+Two must-dos everywhere:
 
 1. Set `ANTHROPIC_API_KEY`.
 2. **Put an auth layer in front** before exposing it — the app is unauthenticated.
@@ -99,31 +130,66 @@ Upload limits (`MAX_FILES`, `MAX_TOTAL_BYTES`) are constants at the top of
 
 ## Add or change a tool
 
-Open `prompts.py` and add an entry to `SKILLS`. A file-based tool:
+Each tool is a folder under `skills/` containing a single `SKILL.md` — a short
+YAML header plus the instructions. Create the folder (locally or straight in the
+GitHub web editor), commit, and the new page appears on redeploy. No Python, no
+UI code, and a malformed file just skips that one skill instead of breaking the
+app.
 
-```python
-{
-    "id": "hazop-review",
-    "name": "HAZOP Reviewer",
-    "emoji": "🦺",
-    "type": "workshop",
-    "skill_id": "xlsx",                      # optional Anthropic hosted skill
-    "blurb": "Upload a P&ID + node list; get a HAZOP worksheet.",
-    "deliverable": "A HAZOP worksheet (.xlsx)",
-    "inputs": [
-        {"key": "review", "label": "P&IDs", "help": "The drawings.",
-         "accept": ".pdf", "required": True, "multiple": True},
-        {"key": "reference", "label": "Node list (optional)", "help": "",
-         "accept": "", "required": False, "multiple": True},
-    ],
-    "instructions_placeholder": "e.g. Use guidewords No/More/Less on each node.",
-    "system": "You are a HAZOP facilitator. From the uploaded P&IDs ...",
-    "starters": ["Run a HAZOP on nodes 1–3 ..."],
-}
+```
+skills/
+  hazop/
+    SKILL.md
 ```
 
-Only `review` and `reference` are valid input keys (the two upload zones the
-backend accepts). Nothing else needs to change — the UI and API pick it up.
+```markdown
+---
+name: HAZOP Reviewer
+emoji: 🦺
+order: 8
+skill_id: xlsx                 # optional: also attach an Anthropic hosted skill (xlsx/docx/pptx/pdf)
+blurb: "Upload a P&ID + node list; get a HAZOP worksheet."
+deliverable: "A HAZOP worksheet (.xlsx)"
+instructions_placeholder: "e.g. Use guidewords No/More/Less on each node."
+inputs:
+  - key: review
+    label: "P&IDs"
+    help: "The drawings."
+    accept: .pdf
+    required: true
+  - key: reference
+    label: "Node list (optional)"
+starters:
+  - "Run a HAZOP on nodes 1–3 ..."
+---
+
+You are a HAZOP facilitator. From the uploaded P&IDs and node list, work
+through each node using the guidewords No/More/Less/... and produce an .xlsx
+worksheet with columns Node, Deviation, Cause, Consequence, Safeguard, Action.
+Save the file.
+```
+
+**Header fields:** `name`, `emoji`, `blurb` (nav/header text), `deliverable`
+(the "You'll get…" line), `order` (sort position), `type` (`workshop` for
+files-in/files-out, the default, or `prompt` for a text answer), `skill_id`
+(optional hosted skill), `instructions_placeholder`, `inputs`, and `starters`.
+The body below the `---` is the instructions Claude follows.
+
+**Input zones:** only `review` and `reference` are valid keys (the two upload
+zones the backend accepts). Each takes `label`, `help`, `accept`
+(comma-separated extensions, or omit for any), `required` (default false), and
+`multiple` (default true).
+
+On a persistent host, the **Reload** button in the sidebar re-scans `skills/`
+without a restart. On Vercel, a redeploy picks up new skills.
+
+### Bringing in your real packaged skills
+
+If you already have a Claude Code / packaged `SKILL.md`, this format is close to
+a copy-paste: move the front-matter fields across (or add the few this app
+uses), and drop the instructions in as the body. For a skill that truly needs to
+run *as a packaged skill* (bundled scripts, resources), upload it once to the
+work org via the Anthropic **Skills API** and set `skill_id:` to its id.
 
 ## Cost & tuning
 

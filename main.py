@@ -55,6 +55,13 @@ def skills() -> dict:
     return {"skills": prompts.list_skills(), "configured": runner.configured}
 
 
+@app.post("/api/reload")
+def reload_skills() -> dict:
+    """Re-scan the skills/ folder without a full restart (useful on persistent hosts)."""
+    count = prompts.reload()
+    return {"ok": True, "count": count}
+
+
 @app.post("/api/run")
 async def run(
     session_id: str = Form(...),

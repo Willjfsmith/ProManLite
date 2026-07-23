@@ -37,7 +37,10 @@
   .tool .emoji { font-size: 18px; }
   .tool .name { font-size: 13.5px; font-weight: 600; }
   .tool .tag { font-size: 10px; color: var(--muted); margin-top: 1px; }
-  .nav-foot { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+  .nav-foot { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); display: flex; align-items: center; justify-content: space-between; }
+  .reload { font: inherit; font-size: 11.5px; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; cursor: pointer; }
+  .reload:hover { color: var(--text); border-color: var(--border-strong); }
+  .reload.spinning { opacity: .6; pointer-events: none; }
 
   main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .topbar { flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--panel); padding: 18px 30px; display: flex; align-items: center; gap: 14px; }
@@ -145,7 +148,7 @@
   <aside>
     <div class="brand"><h1>Team Skills</h1><p>Pick a tool, add files, run it.</p></div>
     <div class="nav" id="nav"></div>
-    <div class="nav-foot">Powered by Claude</div>
+    <div class="nav-foot"><span>Powered by Claude</span><button class="reload" id="reloadBtn" title="Re-scan the skills folder">↻ Reload</button></div>
   </aside>
 
   <main>
@@ -430,6 +433,21 @@ async function clearRuns(){
     body:JSON.stringify({session_id:state.sessionId,skill_id:state.current.id})});
   state.runCount=0; runsEl().innerHTML=""; showEmptyHint();
 }
+
+// ---------- reload skills ----------
+el("reloadBtn").onclick = async () => {
+  const btn = el("reloadBtn"); btn.classList.add("spinning"); btn.textContent = "↻ …";
+  try {
+    await fetch("/api/reload", { method: "POST" });
+    const resp = await fetch("/api/skills"); const data = await resp.json();
+    state.skills = data.skills;
+    const keepId = state.current && state.skills.find(s => s.id === state.current.id) ? state.current.id : (state.skills[0] && state.skills[0].id);
+    renderNav();
+    if (keepId && (!state.current || state.current.id !== keepId || !state.skills.find(s=>s.id===state.current.id))) selectSkill(keepId);
+    else renderNav();
+  } catch (e) { /* ignore */ }
+  btn.classList.remove("spinning"); btn.textContent = "↻ Reload";
+};
 
 // ---------- boot ----------
 async function boot(){
