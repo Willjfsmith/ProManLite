@@ -1,16 +1,15 @@
 """
-main.py — FastAPI app that serves the front end and a streaming chat API.
+main.py — FastAPI app that serves the front end and the run API.
 
 Endpoints:
   GET  /                     the single-page UI
-  GET  /api/skills           the skill catalogue
-  POST /api/chat             stream a response (Server-Sent Events)
-  POST /api/reset            clear a conversation thread
+  GET  /api/skills           the skill catalogue (drives the UI)
+  POST /api/run              upload files + instructions, stream the run (SSE)
+  POST /api/reset            clear a skill's conversation/sandbox
   GET  /api/files/{id}       download a generated file
   GET  /api/health           liveness + whether an API key is configured
 
-No database, no login — it is designed to run behind your own network or SSO.
-See the README for deployment notes.
+No database, no login — designed to run behind your own network or SSO.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ import json
 import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -29,13 +28,11 @@ from runner import runner
 APP_DIR = Path(__file__).parent
 INDEX_HTML = (APP_DIR / "index.html").read_text(encoding="utf-8")
 
+# Guardrail so a single request can't try to push absurd volumes through the API.
+MAX_FILES = 25
+MAX_TOTAL_BYTES = 100 * 1024 * 1024  # 100 MB per run
+
 app = FastAPI(title="Team Skills", docs_url=None, redoc_url=None)
-
-
-class ChatRequest(BaseModel):
-    session_id: str
-    skill_id: str
-    message: str
 
 
 class ResetRequest(BaseModel):
@@ -58,18 +55,46 @@ def skills() -> dict:
     return {"skills": prompts.list_skills(), "configured": runner.configured}
 
 
-@app.post("/api/chat")
-def chat(req: ChatRequest) -> StreamingResponse:
-    skill = prompts.get_skill(req.skill_id)
+@app.post("/api/run")
+async def run(
+    session_id: str = Form(...),
+    skill_id: str = Form(...),
+    instructions: str = Form(""),
+    review: list[UploadFile] = File(default=[]),
+    reference: list[UploadFile] = File(default=[]),
+) -> StreamingResponse:
+    skill = prompts.get_skill(skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="Unknown skill")
 
-    message = (req.message or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Empty message")
+    all_uploads = list(review) + list(reference)
+    if len(all_uploads) > MAX_FILES:
+        raise HTTPException(status_code=413, detail=f"Too many files (max {MAX_FILES}).")
+
+    # Read uploads into memory now — the UploadFile objects don't survive the
+    # streaming response generator.
+    total = 0
+
+    async def read_group(group: list[UploadFile]) -> list[tuple[str, bytes]]:
+        nonlocal total
+        out = []
+        for f in group:
+            data = await f.read()
+            total += len(data)
+            out.append((f.filename or "upload", data))
+        return out
+
+    review_files = await read_group(review)
+    reference_files = await read_group(reference)
+
+    if total > MAX_TOTAL_BYTES:
+        raise HTTPException(status_code=413, detail="Uploads exceed the 100 MB per-run limit.")
+
+    if not instructions.strip() and not all_uploads:
+        raise HTTPException(status_code=400, detail="Add files or instructions to run.")
 
     def event_stream():
-        for event in runner.stream(req.session_id, skill, message):
+        for event in runner.run(session_id, skill, instructions, review_files, reference_files):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(

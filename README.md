@@ -1,41 +1,66 @@
 # Team Skills
 
-A lightweight web front end that lets your wider team interact with specific
-Claude skills — without needing the API, the terminal, or any setup of their own.
+A web front end that lets your wider team run file-based Claude workflows from a
+browser — upload the files to review, add some reference material and
+instructions, hit **Run**, and get files back (a marked-up PDF, a review
+register, an extracted spreadsheet) plus a short summary.
 
-Someone opens the page, picks a skill from the sidebar, and chats. Document
-skills (PowerPoint, Excel, Word, PDF) hand back real, downloadable files.
+No API keys, terminal, or setup for the people using it — they just open the
+page and drop in files.
 
-## What's in the box
+## The tools
 
-| Skill | Type | What it does |
-|-------|------|--------------|
-| PowerPoint Builder | document | Generates `.pptx` decks |
-| Excel Builder | document | Generates `.xlsx` workbooks with formulas/charts |
-| Word Document Writer | document | Generates `.docx` reports, letters, memos |
-| PDF Toolkit | document | Generates and manipulates PDFs |
-| General Assistant | prompt | A capable everyday assistant |
-| Meeting Minutes | prompt | Rough notes → structured minutes + actions |
-| Engineering Estimator | prompt | Deliverables lists & indicative hours |
-| Document Reviewer | prompt | Structured review of a doc, spec, or email |
+| Tool | Upload | You get back |
+|------|--------|--------------|
+| Drawing Review | drawings (+ optional reference/standards) | marked-up PDF(s) + a review register `.xlsx` |
+| Drawing Register | a set of drawings | a title-block register `.xlsx` |
+| P&ID Tag Extract | P&IDs | a categorised tag/line/equipment register `.xlsx` |
+| Document Reviewer | a spec/report (+ optional standards) | a findings register `.xlsx` + written review |
+| Meeting Minutes | notes/transcript (or pasted text) | formatted minutes `.docx` |
+| Engineering Estimator | a scope/register (+ context) | indicative deliverables & hours `.xlsx` |
+| General Assistant | optional attachment | a written answer |
 
-Everything runs on **Claude Opus 4.8**. Document skills use Anthropic's hosted
-skills running in a code-execution container, so the files are produced by
-Claude and streamed back for download.
+Each tool is a card with its own upload zones and instructions. Runs stack below
+so you can compare or refine.
+
+## How it works
+
+Everything runs on **Claude Opus 4.8** over the Claude API:
+
+1. Uploaded files go to the Anthropic **Files API**.
+2. Claude is shown the files it can view (vision over PDFs and images) **and**
+   given them inside a **code-execution sandbox** (which has `pypdf`,
+   `reportlab`, `openpyxl`, `python-docx`, `pdfplumber`, `matplotlib`, `pillow`).
+3. Claude does the work and saves deliverables as files.
+4. Those files are captured and offered back as downloads.
+
+Follow-up runs reuse the same sandbox, so "also flag the electrical clashes"
+keeps your uploaded files in context.
+
+### A note on the engineering skills
+
+The deep engineering skills you may already use in Claude Code
+(`drawing-review`, `pid-metadata-extract`, `drawing-titleblock`, …) are packaged
+skills that run *inside Claude Code*, not on the API. This app reproduces their
+**deliverables** via the code-execution approach above, driven by a tailored
+instruction set per tool (see `prompts.py`). When you want to run your exact
+packaged skills instead, upload them once via the Anthropic **Skills API** and
+set `skill_id` on the matching entry in `prompts.py` — the rest of the app is
+already wired for it (the two Anthropic document skills `xlsx`/`docx` are
+attached this way today).
 
 ## Architecture
 
 ```
-index.html   → single-page UI (no build step, vanilla JS)
-main.py      → FastAPI server: serves the UI + a streaming chat API (SSE)
-runner.py    → wraps the Anthropic SDK: streaming, skill containers, file capture
-prompts.py   → the skill registry — the one file you edit to add/curate skills
+index.html   → single-page UI (upload zones, run cards, no build step)
+main.py      → FastAPI server: serves the UI + a multipart run API (SSE stream)
+runner.py    → Anthropic SDK: uploads, sandbox run, output-file capture
+prompts.py   → the skill registry — the one file you edit to add/curate tools
 ```
 
-No database and no login by design — it's meant to run behind your own network,
-VPN, or SSO (e.g. an internal load balancer, Cloudflare Access, or an
-authenticating reverse proxy). Conversations are held in memory per browser
-session and are lost on restart.
+No database and no login by design — run it behind your own network, VPN, or SSO
+(an internal load balancer, Cloudflare Access, an authenticating proxy). Runs
+and uploads are held in memory per browser session and cleared on restart.
 
 ## Run it locally
 
@@ -47,10 +72,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 python main.py            # or: uvicorn main:app --reload --port 8000
 ```
 
-Open http://localhost:8000
-
-If the key isn't set, the app still loads and shows a banner — it just can't chat
-until a key is present.
+Open http://localhost:8000 — without a key the page loads and shows a banner but
+can't run.
 
 ## Run it with Docker
 
@@ -61,56 +84,50 @@ docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8000:8000 team-skills
 
 ## Deploy
 
-It's a standard ASGI app, so it runs anywhere Python does — a VM with
-`uvicorn`/`gunicorn`, a container platform (Cloud Run, ECS, Fly.io, Render), or
-behind nginx. Two things to remember:
+Standard ASGI app — runs on any VM (`uvicorn`/`gunicorn`), container platform
+(Cloud Run, ECS, Fly.io, Render), or behind nginx. Two must-dos:
 
-1. Set `ANTHROPIC_API_KEY` in the environment.
-2. **Put an auth layer in front of it** before exposing it to the team, since the
-   app itself is unauthenticated.
+1. Set `ANTHROPIC_API_KEY`.
+2. **Put an auth layer in front** before exposing it — the app is unauthenticated.
 
-For higher traffic, run multiple workers
-(`uvicorn main:app --workers 4`). Note that in-memory conversation state is
-per-worker, so use sticky sessions or a single worker if continuous multi-turn
-threads matter; each turn still works fine without stickiness.
+For higher traffic, run multiple workers. In-memory sandbox/run state is
+per-worker, so use sticky sessions (or a single worker) if you rely on follow-up
+runs reusing an earlier upload; each fresh run works fine without stickiness.
 
-## Add or change a skill
+Upload limits (`MAX_FILES`, `MAX_TOTAL_BYTES`) are constants at the top of
+`main.py`.
 
-Open `prompts.py` and add an entry to `SKILLS`.
+## Add or change a tool
 
-**A prompt specialist** (text only) — just write a good system prompt:
+Open `prompts.py` and add an entry to `SKILLS`. A file-based tool:
 
 ```python
 {
-    "id": "safety",
-    "name": "Safety Reviewer",
+    "id": "hazop-review",
+    "name": "HAZOP Reviewer",
     "emoji": "🦺",
-    "type": "prompt",
-    "blurb": "Reviews method statements for HSE gaps.",
-    "system": "You are an HSE specialist. Review the provided ...",
-    "starters": ["Review this JSA for missing controls: ..."],
+    "type": "workshop",
+    "skill_id": "xlsx",                      # optional Anthropic hosted skill
+    "blurb": "Upload a P&ID + node list; get a HAZOP worksheet.",
+    "deliverable": "A HAZOP worksheet (.xlsx)",
+    "inputs": [
+        {"key": "review", "label": "P&IDs", "help": "The drawings.",
+         "accept": ".pdf", "required": True, "multiple": True},
+        {"key": "reference", "label": "Node list (optional)", "help": "",
+         "accept": "", "required": False, "multiple": True},
+    ],
+    "instructions_placeholder": "e.g. Use guidewords No/More/Less on each node.",
+    "system": "You are a HAZOP facilitator. From the uploaded P&IDs ...",
+    "starters": ["Run a HAZOP on nodes 1–3 ..."],
 }
 ```
 
-**A document skill** (produces files) — point at an Anthropic skill id:
-
-```python
-{
-    "id": "xlsx",
-    "skill_id": "xlsx",
-    "name": "Excel Builder",
-    "emoji": "📈",
-    "type": "document",
-    "blurb": "Builds spreadsheets and models.",
-    "starters": ["Build a budget tracker ..."],
-}
-```
-
-No other file needs to change — the UI and API pick it up automatically.
+Only `review` and `reference` are valid input keys (the two upload zones the
+backend accepts). Nothing else needs to change — the UI and API pick it up.
 
 ## Cost & tuning
 
-The model, token limits, and beta flags live at the top of `runner.py`. Document
-skills use more tokens than prompt skills because Claude writes and runs code to
-build the file. Adjust `MODEL` / `MAX_TOKENS` there if you want a cheaper or
-faster configuration for high-volume use.
+Model, token limits, and beta flags live at the top of `runner.py`. File
+workflows use more tokens than a plain question because Claude reads the files
+and writes/runs code to build the deliverable. Adjust `MODEL` / `MAX_TOKENS`
+there for a cheaper or faster configuration.

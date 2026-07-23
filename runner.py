@@ -1,14 +1,17 @@
 """
 runner.py — the bridge between the web app and the Claude API.
 
-Responsibilities:
-  * Hold per-conversation state (message history + container reuse) in memory.
-  * Stream a Claude response for a given skill.
-  * For document skills, capture any files Claude generates and make them
-    downloadable.
+The core flow for a "workshop" skill:
+  1. Upload the user's files to the Anthropic Files API.
+  2. Send Claude a message that (a) shows it the files it can view (PDFs, images)
+     and (b) makes every file available in a code-execution sandbox.
+  3. Claude does the work in the sandbox and saves deliverables as files.
+  4. We capture those output files and hand them back for download.
 
-Everything here targets the current Anthropic Python SDK. The model, betas, and
-tool versions are pulled into constants at the top so they are easy to update.
+"prompt" skills are the simple case: text in, text out, optional file context.
+
+Model, betas, and tool versions are constants at the top so they are easy to
+change in one place.
 """
 
 from __future__ import annotations
@@ -23,10 +26,24 @@ import anthropic
 MODEL = "claude-opus-4-8"
 MAX_TOKENS = 32000
 
-# Betas required to run Anthropic document skills inside a code-execution container.
-SKILL_BETAS = ["code-execution-2025-08-25", "skills-2025-10-02"]
 FILES_BETA = "files-api-2025-04-14"
-CODE_EXECUTION_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
+CODE_BETA = "code-execution-2025-08-25"
+SKILLS_BETA = "skills-2025-10-02"
+CODE_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff"}
+PDF_EXTS = {".pdf"}
+
+WORKSHOP_DIRECTIVE = (
+    "\n\nYou are running inside a code-execution sandbox. The user's uploaded files "
+    "are available in the working directory (run `ls` to find them); viewable files "
+    "(PDFs, images) are also shown to you inline. Do the requested work, then SAVE "
+    "every deliverable as a file in the working directory with a clear name. Use "
+    "openpyxl for .xlsx, python-docx for .docx, and pypdf/reportlab for PDF markup. "
+    "When finished, give a brief plain-text summary of what you produced and the key "
+    "findings. The files you save will be returned to the user to download — so make "
+    "sure the deliverables are written to disk."
+)
 
 
 @dataclass
@@ -37,16 +54,13 @@ class GeneratedFile:
 
 @dataclass
 class Conversation:
-    """In-memory state for one browser session + skill combination."""
-
     messages: list = field(default_factory=list)
-    container_id: str | None = None  # reused across turns for document skills
+    container_id: str | None = None
 
 
 class SkillRunner:
     def __init__(self) -> None:
         self._client: anthropic.Anthropic | None = None
-        # keyed by (session_id, skill_id) so switching skills starts a fresh thread
         self._conversations: dict[tuple[str, str], Conversation] = {}
         self._lock = threading.Lock()
 
@@ -55,7 +69,7 @@ class SkillRunner:
     def configured(self) -> bool:
         return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
-    def _get_client(self) -> anthropic.Anthropic:
+    def _client_(self) -> anthropic.Anthropic:
         if self._client is None:
             self._client = anthropic.Anthropic()
         return self._client
@@ -73,78 +87,116 @@ class SkillRunner:
         with self._lock:
             self._conversations.pop((session_id, skill_id), None)
 
-    # -- streaming ----------------------------------------------------------
-    def stream(self, session_id: str, skill: dict, user_message: str) -> Iterator[dict]:
+    # -- entry point --------------------------------------------------------
+    def run(
+        self,
+        session_id: str,
+        skill: dict,
+        instructions: str,
+        review_files: list[tuple[str, bytes]],
+        reference_files: list[tuple[str, bytes]],
+    ) -> Iterator[dict]:
         """
-        Yield event dicts as the response is produced:
-          {"type": "text", "text": "..."}       incremental assistant text
-          {"type": "file", "file_id", "name"}   a downloadable generated file
-          {"type": "error", "message": "..."}   something went wrong
-          {"type": "done"}                       end of turn
+        Yield event dicts:
+          {"type": "status", "text": "..."}     progress line (upload, thinking)
+          {"type": "text",   "text": "..."}     incremental assistant text
+          {"type": "file",   "file_id", "name"} a downloadable output file
+          {"type": "error",  "message": "..."}  failure
+          {"type": "done"}                       end of run
         """
         if not self.configured:
-            yield {
-                "type": "error",
-                "message": "The server has no ANTHROPIC_API_KEY configured. "
-                "Set it and restart the app.",
-            }
+            yield {"type": "error", "message":
+                   "The server has no ANTHROPIC_API_KEY configured. Set it and restart the app."}
             yield {"type": "done"}
             return
 
         conv = self._conversation(session_id, skill["id"])
-        conv.messages.append({"role": "user", "content": user_message})
+        uploads = [("review", n, b) for n, b in review_files] + \
+                  [("reference", n, b) for n, b in reference_files]
 
         try:
-            if skill["type"] == "document":
-                yield from self._stream_document_skill(conv, skill)
+            if skill["type"] == "workshop":
+                yield from self._run_workshop(conv, skill, instructions, uploads)
             else:
-                yield from self._stream_prompt_skill(conv, skill)
+                yield from self._run_prompt(conv, skill, instructions, uploads)
         except anthropic.APIStatusError as exc:
-            # Roll back the user turn so a retry starts clean.
-            conv.messages.pop()
+            if conv.messages and conv.messages[-1]["role"] == "user":
+                conv.messages.pop()
             yield {"type": "error", "message": f"API error ({exc.status_code}): {exc.message}"}
-        except Exception as exc:  # noqa: BLE001 - surface anything to the UI
-            conv.messages.pop()
+        except Exception as exc:  # noqa: BLE001
+            if conv.messages and conv.messages[-1]["role"] == "user":
+                conv.messages.pop()
             yield {"type": "error", "message": f"Unexpected error: {exc}"}
 
         yield {"type": "done"}
 
-    def _stream_prompt_skill(self, conv: Conversation, skill: dict) -> Iterator[dict]:
-        client = self._get_client()
-        assistant_text: list[str] = []
+    # -- uploads / blocks ---------------------------------------------------
+    def _upload(self, name: str, data: bytes) -> tuple[str, str]:
+        """Upload a file, return (file_id, kind) where kind is image|pdf|other."""
+        client = self._client_()
+        uploaded = client.beta.files.upload(file=(name, data, None), betas=[FILES_BETA])
+        ext = os.path.splitext(name)[1].lower()
+        kind = "image" if ext in IMAGE_EXTS else "pdf" if ext in PDF_EXTS else "other"
+        return uploaded.id, kind
 
-        with client.messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=skill["system"],
-            thinking={"type": "adaptive"},
-            messages=conv.messages,
-        ) as stream:
-            for text in stream.text_stream:
-                assistant_text.append(text)
-                yield {"type": "text", "text": text}
-            final = stream.get_final_message()
+    def _view_block(self, file_id: str, kind: str) -> dict | None:
+        if kind == "image":
+            return {"type": "image", "source": {"type": "file", "file_id": file_id}}
+        if kind == "pdf":
+            return {"type": "document", "source": {"type": "file", "file_id": file_id}}
+        return None
 
-        conv.messages.append({"role": "assistant", "content": final.content})
-        # Guard against an assistant turn with no text (keeps history valid).
-        if not any(b.type == "text" for b in final.content):
-            conv.messages.append(
-                {"role": "assistant", "content": "".join(assistant_text) or "(no response)"}
-            )
+    # -- workshop -----------------------------------------------------------
+    def _run_workshop(self, conv, skill, instructions, uploads) -> Iterator[dict]:
+        client = self._client_()
 
-    def _stream_document_skill(self, conv: Conversation, skill: dict) -> Iterator[dict]:
-        client = self._get_client()
+        review_names, reference_names = [], []
+        view_blocks, container_blocks = [], []
+
+        if uploads:
+            yield {"type": "status", "text": f"Uploading {len(uploads)} file(s)…"}
+            for group, name, data in uploads:
+                file_id, kind = self._upload(name, data)
+                (review_names if group == "review" else reference_names).append(name)
+                container_blocks.append({"type": "container_upload", "file_id": file_id})
+                vb = self._view_block(file_id, kind)
+                if vb:
+                    view_blocks.append(vb)
+
+        # Build the user turn: files first, then the manifest + instructions.
+        manifest = []
+        if review_names:
+            manifest.append("Files to review: " + ", ".join(review_names))
+        if reference_names:
+            manifest.append("Reference files: " + ", ".join(reference_names))
+        text = "\n".join(manifest)
+        if instructions.strip():
+            text += ("\n\n" if text else "") + "Instructions:\n" + instructions.strip()
+        if not text:
+            text = "Proceed with the uploaded files per your role."
+
+        content = view_blocks + container_blocks + [{"type": "text", "text": text}]
+        conv.messages.append({"role": "user", "content": content})
+
+        betas = [FILES_BETA, CODE_BETA]
+        container = conv.container_id
+        if skill.get("skill_id"):
+            betas.append(SKILLS_BETA)
+            if not container:
+                container = {"skills": [{"type": "anthropic", "skill_id": skill["skill_id"], "version": "latest"}]}
 
         kwargs = dict(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            betas=SKILL_BETAS,
-            container={"skills": [{"type": "anthropic", "skill_id": skill["skill_id"], "version": "latest"}]},
-            tools=[CODE_EXECUTION_TOOL],
+            betas=betas,
+            system=skill["system"] + WORKSHOP_DIRECTIVE,
+            tools=[CODE_TOOL],
             messages=conv.messages,
         )
-        if conv.container_id:
-            kwargs["container"] = conv.container_id  # reuse the same workspace
+        if container is not None:
+            kwargs["container"] = container
+
+        yield {"type": "status", "text": "Working in the sandbox…"}
 
         with client.beta.messages.stream(**kwargs) as stream:
             for event in stream:
@@ -152,18 +204,56 @@ class SkillRunner:
                     yield {"type": "text", "text": event.delta.text}
             final = stream.get_final_message()
 
-        # Remember the container so follow-up turns keep the same files/state.
         if getattr(final, "container", None):
             conv.container_id = final.container.id
 
         conv.messages.append({"role": "assistant", "content": final.content})
 
-        for gen in self._extract_files(final):
-            yield {"type": "file", "file_id": gen.file_id, "name": gen.filename}
+        files = self._extract_files(final)
+        if files:
+            yield {"type": "status", "text": f"Retrieving {len(files)} output file(s)…"}
+            for gen in files:
+                yield {"type": "file", "file_id": gen.file_id, "name": gen.filename}
 
-    # -- file capture -------------------------------------------------------
+    # -- prompt -------------------------------------------------------------
+    def _run_prompt(self, conv, skill, instructions, uploads) -> Iterator[dict]:
+        client = self._client_()
+
+        view_blocks = []
+        if uploads:
+            yield {"type": "status", "text": f"Uploading {len(uploads)} file(s)…"}
+            for _group, name, data in uploads:
+                file_id, kind = self._upload(name, data)
+                vb = self._view_block(file_id, kind)
+                if vb:
+                    view_blocks.append(vb)
+
+        text = instructions.strip() or "Please respond."
+        conv.messages.append({"role": "user", "content": view_blocks + [{"type": "text", "text": text}]})
+
+        yield {"type": "status", "text": "Thinking…"}
+
+        if view_blocks:
+            ctx = client.beta.messages.stream(
+                model=MODEL, max_tokens=MAX_TOKENS, betas=[FILES_BETA],
+                system=skill["system"], thinking={"type": "adaptive"}, messages=conv.messages,
+            )
+        else:
+            ctx = client.messages.stream(
+                model=MODEL, max_tokens=MAX_TOKENS,
+                system=skill["system"], thinking={"type": "adaptive"}, messages=conv.messages,
+            )
+        with ctx as stream:
+            for text_delta in stream.text_stream:
+                yield {"type": "text", "text": text_delta}
+            final = stream.get_final_message()
+
+        conv.messages.append({"role": "assistant", "content": final.content})
+
+    # -- output file capture ------------------------------------------------
     def _extract_files(self, message) -> list[GeneratedFile]:
         found: list[GeneratedFile] = []
+        seen: set[str] = set()
         for block in message.content:
             if block.type != "bash_code_execution_tool_result":
                 continue
@@ -173,26 +263,24 @@ class SkillRunner:
                 continue
             for ref in items:
                 file_id = getattr(ref, "file_id", None)
-                if not file_id:
+                if not file_id or file_id in seen:
                     continue
-                name = self._filename_for(file_id)
-                found.append(GeneratedFile(file_id=file_id, filename=name))
+                seen.add(file_id)
+                found.append(GeneratedFile(file_id=file_id, filename=self._filename_for(file_id)))
         return found
 
     def _filename_for(self, file_id: str) -> str:
         try:
-            meta = self._get_client().beta.files.retrieve_metadata(file_id)
+            meta = self._client_().beta.files.retrieve_metadata(file_id, betas=[FILES_BETA])
             return os.path.basename(meta.filename) or file_id
         except Exception:  # noqa: BLE001
             return file_id
 
     def download(self, file_id: str) -> tuple[str, bytes]:
-        """Return (filename, bytes) for a generated file."""
-        client = self._get_client()
+        client = self._client_()
         name = self._filename_for(file_id)
-        content = client.beta.files.download(file_id)
-        data = content.read()
-        return name, data
+        content = client.beta.files.download(file_id, betas=[FILES_BETA])
+        return name, content.read()
 
 
 runner = SkillRunner()
