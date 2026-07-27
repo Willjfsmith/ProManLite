@@ -78,55 +78,57 @@ python main.py            # or: uvicorn main:app --reload --port 8000
 Open http://localhost:8000 — without a key the page loads and shows a banner but
 can't run.
 
-## Deploy on Vercel
+## Deploy — use a container host (recommended)
 
-The repo is Vercel-ready (`api/index.py` + `vercel.json`):
+**For the file-based tools, deploy the Dockerfile to a container host, not
+Vercel.** Vercel's serverless functions cap the request body at **4.5 MB**, so
+uploading a real drawing PDF fails with `FUNCTION_PAYLOAD_TOO_LARGE` — a hard
+platform limit that can't be raised. A container host has no such cap, plus real
+streaming, long request timeouts, and persistent state.
 
-1. Push the repo to GitHub and **Import Project** in Vercel.
-2. In **Settings → Environment Variables**, add `ANTHROPIC_API_KEY` (use the key
-   from the **work** Anthropic org so runs bill there — nobody on the team needs
-   their own account).
-3. Deploy. Adding a skill later = commit a new `skills/<name>/SKILL.md` and let
-   Vercel redeploy; the new page appears.
+### Render (one click)
 
-**Vercel-specific caveats** (worth knowing before you rely on it):
+The repo ships a `render.yaml`. In Render: **New → Blueprint**, point at this
+repo, and set `ANTHROPIC_API_KEY` (the **work** org's key, so runs bill there and
+nobody needs their own account). Done.
 
-- **Use the Pro plan.** Vercel functions time out at 60s on Hobby and up to 300s
-  on Pro (`maxDuration` in `vercel.json`). A drawing review with markup can run a
-  few minutes, so Hobby will cut it off; even on Pro a large batch may be tight.
-- **No live token streaming.** Vercel's Python runtime buffers the response, so
-  the UI shows a spinner and then the finished result (files + summary) rather
-  than streaming text as it's produced. Everything still works; it just isn't
-  incremental.
-- **Follow-up runs may not reuse context.** Serverless instances don't keep
-  in-memory state reliably, so treat each run as independent (re-upload files for
-  a follow-up).
+### Railway / Fly.io / Cloud Run / a VM
 
-If those bite, the **Dockerfile** below runs the exact same app on a persistent
-host (Railway, Render, Fly.io, Cloud Run, a VM) where streaming, long runs, and
-follow-up context all work — no code changes.
-
-## Run it with Docker
+All deploy the same `Dockerfile`:
 
 ```bash
 docker build -t team-skills .
 docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8000:8000 team-skills
 ```
 
-## Deploy anywhere else
+Railway auto-detects the Dockerfile from the GitHub repo; add the env var and
+deploy. Note Cloud Run still caps request bodies (32 MB) — fine for most single
+drawings but Railway/Render/Fly have no low cap.
 
-Standard ASGI app — runs on any VM (`uvicorn`/`gunicorn`) or container platform.
-Two must-dos everywhere:
+Adding a skill later = commit a new `skills/<name>/SKILL.md`; on a persistent
+host the **Reload** button picks it up, or just redeploy.
 
-1. Set `ANTHROPIC_API_KEY`.
-2. **Put an auth layer in front** before exposing it — the app is unauthenticated.
+## Vercel (text-only / small-file tools only)
 
-For higher traffic, run multiple workers. In-memory sandbox/run state is
-per-worker, so use sticky sessions (or a single worker) if you rely on follow-up
-runs reusing an earlier upload; each fresh run works fine without stickiness.
+The repo is also Vercel-ready (`api/index.py` + `vercel.json`) — but only suited
+to the tools that take small or no uploads (the Assistant, pasted-text Minutes).
+Import the repo, set `ANTHROPIC_API_KEY`, deploy. Known limits on Vercel:
 
-Upload limits (`MAX_FILES`, `MAX_TOTAL_BYTES`) are constants at the top of
-`main.py`.
+- **4.5 MB upload cap** (above) — rules out real drawings.
+- **Timeout** — 60s on Hobby, up to 300s on Pro (`maxDuration` in `vercel.json`).
+- **No live streaming** — the Python runtime buffers, so the UI shows a spinner
+  then the finished result rather than incremental text.
+- **Runs are independent** — serverless doesn't keep sandbox state between runs.
+
+## Notes for any host
+
+- **Set `ANTHROPIC_API_KEY`** (the work org's key).
+- **Put an auth layer in front** before exposing it — the app is unauthenticated.
+- For higher traffic, run multiple workers. In-memory sandbox/run state is
+  per-worker, so use sticky sessions (or a single worker) if you rely on
+  follow-up runs reusing an earlier upload; each fresh run works fine without.
+- Upload limits (`MAX_FILES`, `MAX_TOTAL_BYTES`) are constants at the top of
+  `main.py`.
 
 ## Add or change a tool
 

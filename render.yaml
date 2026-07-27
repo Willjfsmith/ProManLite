@@ -1,0 +1,13 @@
+# One-click deploy on Render (https://render.com) using the Dockerfile.
+# In the Render dashboard: New → Blueprint → point at this repo, then set
+# ANTHROPIC_API_KEY (the work org's key) when prompted.
+services:
+  - type: web
+    name: team-skills
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # "free" works for testing (spins down when idle)
+    healthCheckPath: /api/health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in the dashboard; never committed
