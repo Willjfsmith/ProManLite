@@ -96,6 +96,17 @@
   .form-foot .clear { margin-left: auto; font-size: 12.5px; color: var(--muted); background: none; border: none; cursor: pointer; text-decoration: underline; }
   .form-foot .clear:hover { color: var(--text); }
 
+  .model-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  select.model-sel {
+    font: inherit; font-size: 13.5px; padding: 8px 34px 8px 12px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); outline: none; -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' fill='none' stroke='%2376736c' stroke-width='1.5'/></svg>");
+    background-repeat: no-repeat; background-position: right 12px center;
+  }
+  select.model-sel:focus { border-color: var(--accent); }
+  .model-hint { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .model-hint b { color: var(--text); font-weight: 600; }
+
   .examples { margin-top: 14px; }
   .examples .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -109,7 +120,10 @@
   .card-head .idx { font-size: 11px; font-weight: 700; color: var(--muted); }
   .card-head .brief-text { font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-head .status { font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
-  .status.running { color: var(--accent); } .status.done { color: var(--ok); } .status.err { color: var(--accent); }
+  .status.running { color: var(--accent); } .status.done { color: var(--ok); } .status.err { color: var(--accent); } .status.stopped { color: var(--muted); }
+  .card-head .model-badge { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 2px 9px; white-space: nowrap; }
+  .card-head .stop { font: inherit; font-size: 11.5px; font-weight: 600; color: var(--muted); background: none; border: 1px solid var(--border-strong); border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+  .card-head .stop:hover { color: var(--accent); border-color: var(--accent); }
   .status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .status.running .dot { animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .3; } }
@@ -173,7 +187,7 @@
   </main>
 
 <script>
-const state = { skills: [], current: null, sessionId: null, running: false, runCount: 0, files: {} };
+const state = { skills: [], models: [], defaultModel: null, model: null, persistent: true, localSeq: 0, current: null, sessionId: null, runCount: 0, files: {}, cards: {} };
 
 state.sessionId = localStorage.getItem("ts_session");
 if (!state.sessionId) {
@@ -231,10 +245,11 @@ function renderNav(){
 // ---------- skill form ----------
 function selectSkill(id){
   const s=state.skills.find(x=>x.id===id); if(!s) return;
-  state.current=s; state.runCount=0; state.files={};
+  state.current=s; state.runCount=0; state.files={}; state.cards={};
   el("tEmoji").textContent=s.emoji; el("tName").textContent=s.name; el("tBlurb").textContent=s.blurb;
   el("tPill").textContent = s.produces_files ? "Files in → files out" : "Text answer";
   buildForm(s); runsEl().innerHTML=""; showEmptyHint(); renderNav();
+  if(state.persistent) loadHistory(s.id);
 }
 
 function buildForm(s){
@@ -259,6 +274,14 @@ function buildForm(s){
   instr.innerHTML=`<div class="field-label">Context / instructions</div>
     <textarea id="instr" placeholder="${esc(s.instructions_placeholder||"Add any context or instructions…")}"></textarea>`;
   f.appendChild(instr);
+  // model
+  if((state.models||[]).length){
+    const mf=document.createElement("div"); mf.className="field";
+    const opts=state.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} — ${esc(m.tag)}</option>`).join("");
+    mf.innerHTML=`<div class="field-label">Model</div>
+      <div class="model-row"><select class="model-sel" id="modelSel">${opts}</select><span class="model-hint" id="modelHint"></span></div>`;
+    f.appendChild(mf);
+  }
   // foot
   const foot=document.createElement("div"); foot.className="form-foot";
   foot.innerHTML=`<button class="run" id="runBtn">Run ▸</button>
@@ -274,6 +297,14 @@ function buildForm(s){
     ex.querySelectorAll(".chip").forEach(b=>b.onclick=()=>{el("instr").value=s.starters[b.dataset.i];el("instr").focus();});
   }
   wireForm();
+  const sel=el("modelSel");
+  if(sel){
+    if(!state.model || !state.models.find(m=>m.id===state.model)) state.model=state.defaultModel || (state.models[0]&&state.models[0].id);
+    sel.value=state.model;
+    const upd=()=>{ state.model=sel.value; const m=state.models.find(x=>x.id===sel.value);
+      el("modelHint").innerHTML=m?`<b>${esc(m.tag)}.</b> ${esc(m.blurb)}`:""; };
+    sel.onchange=upd; upd();
+  }
   el("runBtn").onclick=run;
   el("clearBtn").onclick=clearRuns;
 }
@@ -308,35 +339,58 @@ function renderFileList(key){
 }
 
 function showEmptyHint(){
-  el("clearBtn") && (el("clearBtn").style.display="none");
-  if(runsEl().querySelector(".card")) return;
-  runsEl().innerHTML=`<div class="empty-hint">No runs yet — add your files and instructions above, then hit <strong>Run</strong>.</div>`;
-}
-
-// ---------- run ----------
-function inputSummary(){
-  const parts=[];
-  for(const inp of (state.current.inputs||[])){
-    const n=(state.files[inp.key]||[]).length;
-    if(n) parts.push(`${n} ${inp.label.toLowerCase()}`);
+  const hasCards=!!runsEl().querySelector(".card");
+  const cb=el("clearBtn"); if(cb) cb.style.display=hasCards?"inline":"none";
+  if(hasCards){ const h=runsEl().querySelector(".empty-hint"); if(h) h.remove(); return; }
+  if(!runsEl().querySelector(".empty-hint")){
+    runsEl().innerHTML=`<div class="empty-hint">No runs yet — add your files and instructions above, then hit <strong>Run</strong>.</div>`;
   }
-  const instr=(el("instr").value||"").trim();
-  if(instr) parts.push("instructions");
-  return parts;
 }
 
-function newCard(summary){
+// ---------- run cards ----------
+function anyRunning(){ return Object.values(state.cards).some(c=>c.status==="running"); }
+
+function refreshRunButton(){
+  const btn=el("runBtn"); if(!btn) return;
+  const busy=anyRunning();
+  btn.disabled=busy; btn.innerHTML=busy?`<span class="spin"></span>Running`:"Run ▸";
+}
+
+function setStatus(card, cls, label){
+  const s=card.querySelector(".status"); s.className="status "+cls; s.innerHTML='<span class="dot"></span>'+esc(label);
+}
+
+function renderFiles(card, files){
+  if(!files.length) return;
+  let w=card.querySelector(".files");
+  if(!w){
+    w=document.createElement("div"); w.className="files";
+    w.innerHTML=`<div class="flabel">Returned files</div><div class="wrap"></div>`;
+    card.querySelector(".card-body").appendChild(w);
+  }
+  const wrap=w.querySelector(".wrap"); wrap.innerHTML="";
+  for(const f of files){
+    const a=document.createElement("a"); a.className="file-chip";
+    a.href="/api/files/"+encodeURIComponent(f.file_id); a.setAttribute("download", f.name);
+    a.innerHTML=`<span>📎 ${esc(f.name)}</span><span class="dl">Download</span>`;
+    wrap.appendChild(a);
+  }
+}
+
+function ensureCard(snap, number){
+  if(state.cards[snap.id]) return state.cards[snap.id].el;
   const hint=runsEl().querySelector(".empty-hint"); if(hint) hint.remove();
-  el("clearBtn").style.display="inline";
+  const cb=el("clearBtn"); if(cb) cb.style.display="inline";
   if(!runsEl().querySelector(".runs-head")){ const h=document.createElement("div"); h.className="runs-head"; h.textContent="Runs"; runsEl().prepend(h); }
-  state.runCount++;
-  const card=document.createElement("div"); card.className="card";
-  const chips=summary.map(s=>`<span class="ic">${esc(s)}</span>`).join("");
+  const card=document.createElement("div"); card.className="card"; card.dataset.run=snap.id;
+  const chips=(snap.summary||[]).map(x=>`<span class="ic">${esc(x)}</span>`).join("");
   card.innerHTML=`
     <div class="card-head">
-      <span class="idx">RUN ${state.runCount}</span>
-      <span class="brief-text">${summary.map(esc).join(" · ")||"run"}</span>
+      <span class="idx">RUN ${number}</span>
+      <span class="brief-text">${(snap.summary||[]).map(esc).join(" · ")||"run"}</span>
+      <span class="model-badge" title="Model used for this run">${esc(snap.model_name||"")}</span>
       <span class="status running"><span class="dot"></span>Working…</span>
+      <button class="stop" title="Stop this run">Stop</button>
     </div>
     <div class="card-body">
       <div class="card-inputs">${chips}</div>
@@ -344,17 +398,115 @@ function newCard(summary){
       <div class="out"></div>
     </div>`;
   runsEl().querySelector(".runs-head").after(card);
+  const stopBtn=card.querySelector(".stop"); stopBtn.onclick=()=>stopRun(snap.id, stopBtn);
+  state.cards[snap.id]={ el:card, acc:"", started:false, files:[], status:snap.status||"running", cursor:0 };
   return card;
 }
 
-async function run(){
-  if(state.running || !state.current) return;
-  const s=state.current;
-  // validate required inputs
-  for(const inp of (s.inputs||[])){
-    if(inp.required && !(state.files[inp.key]||[]).length){
-      alert(`Please add: ${inp.label}`); return;
+function applyEvent(runId, ev){
+  const c=state.cards[runId]; if(!c) return; const card=c.el; c.cursor++;
+  const statusline=card.querySelector(".statusline"); const out=card.querySelector(".out");
+  if(ev.type==="status"){ statusline.style.display=""; statusline.querySelector("span").textContent=ev.text; }
+  else if(ev.type==="text"){
+    if(!c.started){ c.started=true; statusline.style.display="none"; }
+    c.acc+=ev.text; out.innerHTML='<div class="md">'+renderMd(c.acc)+"</div>";
+  } else if(ev.type==="file"){ c.files.push({file_id:ev.file_id, name:ev.name}); renderFiles(card, c.files); }
+  else if(ev.type==="error"){
+    c.status="error"; statusline.style.display="none";
+    out.innerHTML='<div class="md" style="color:var(--accent)">⚠️ '+esc(ev.message)+"</div>";
+    setStatus(card, "err", "Failed");
+  } else if(ev.type==="done"){ finalizeCard(runId, ev.status); }
+}
+
+function finalizeCard(runId, finalStatus){
+  const c=state.cards[runId]; if(!c) return; const card=c.el;
+  const out=card.querySelector(".out"); const statusline=card.querySelector(".statusline");
+  const stopBtn=card.querySelector(".stop"); if(stopBtn) stopBtn.style.display="none";
+  if(c.status==="error" || finalStatus==="error"){ c.status="error"; }
+  else if(finalStatus==="stopped"){
+    c.status="stopped"; statusline.style.display="none";
+    if(!out.querySelector(".md")) out.innerHTML='<div class="md" style="color:var(--muted)">(stopped before any output)</div>';
+    setStatus(card, "stopped", "Stopped");
+  } else {
+    c.status="done";
+    if(!c.started && !out.querySelector(".md")){ statusline.style.display="none"; out.innerHTML='<div class="md" style="color:var(--muted)">(no text output)</div>'; }
+    setStatus(card, "done", "Done");
+  }
+  refreshRunButton();
+}
+
+async function streamRun(runId, cursor){
+  const c=state.cards[runId]; if(!c) return;
+  try{
+    const resp=await fetch(`/api/runs/${encodeURIComponent(runId)}/stream?cursor=${cursor||0}`);
+    if(!resp.ok) throw new Error("stream "+resp.status);
+    const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf="";
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true}); let idx;
+      while((idx=buf.indexOf("\n\n"))>=0){
+        const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+        const line=chunk.replace(/^data: /,""); if(!line) continue;
+        let ev; try{ev=JSON.parse(line);}catch{continue;}
+        applyEvent(runId, ev);
+      }
     }
+    // Stream closed but the run may still be going (proxy/idle cut) — reconnect from where we are.
+    if(state.cards[runId] && state.cards[runId].status==="running"){ setTimeout(()=>streamRun(runId, state.cards[runId].cursor), 1200); }
+  }catch(e){
+    if(state.cards[runId] && state.cards[runId].status==="running"){ setTimeout(()=>streamRun(runId, state.cards[runId].cursor), 1500); }
+  }
+}
+
+async function stopRun(runId, btn){
+  if(btn){ btn.disabled=true; btn.textContent="Stopping…"; }
+  try{ await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`,{method:"POST"}); }catch(e){}
+}
+
+function renderStatic(snap, number){
+  const card=ensureCard(snap, number); const c=state.cards[snap.id];
+  c.status=snap.status; c.files=snap.files||[]; c.cursor=snap.event_count||0;
+  const out=card.querySelector(".out"); const statusline=card.querySelector(".statusline");
+  const stopBtn=card.querySelector(".stop"); if(stopBtn) stopBtn.style.display="none";
+  statusline.style.display="none";
+  if((snap.text||"").trim()){ c.started=true; c.acc=snap.text; out.innerHTML='<div class="md">'+renderMd(snap.text)+"</div>"; }
+  if(snap.status==="error"){ out.innerHTML='<div class="md" style="color:var(--accent)">⚠️ '+esc(snap.error||"Failed")+"</div>"; setStatus(card, "err", "Failed"); }
+  else if(snap.status==="stopped"){ if(!(snap.text||"").trim()) out.innerHTML='<div class="md" style="color:var(--muted)">(stopped before any output)</div>'; setStatus(card, "stopped", "Stopped"); }
+  else { if(!(snap.text||"").trim()) out.innerHTML='<div class="md" style="color:var(--muted)">(no text output)</div>'; setStatus(card, "done", "Done"); }
+  renderFiles(card, c.files);
+}
+
+async function loadHistory(skillId){
+  let runs=[];
+  try{
+    const r=await fetch(`/api/runs?session_id=${encodeURIComponent(state.sessionId)}&skill_id=${encodeURIComponent(skillId)}`);
+    const d=await r.json(); runs=d.runs||[];
+  }catch(e){ /* no history reachable */ }
+  if(!state.current || state.current.id!==skillId) return; // user switched tools while loading
+  state.runCount=runs.length;
+  runs.forEach((snap, i)=>{
+    const number=i+1;
+    if(snap.status==="running"){ ensureCard(snap, number); state.cards[snap.id].status="running"; streamRun(snap.id, 0); }
+    else renderStatic(snap, number);
+  });
+  refreshRunButton();
+  showEmptyHint();
+}
+
+// ---------- run ----------
+function localSummary(s){
+  const parts=[];
+  for(const inp of (s.inputs||[])){ const n=(state.files[inp.key]||[]).length; if(n) parts.push(`${n} ${inp.label.toLowerCase()}`); }
+  if((el("instr").value||"").trim()) parts.push("instructions");
+  return parts;
+}
+function clearUploads(s){ for(const inp of (s.inputs||[])){ state.files[inp.key]=[]; renderFileList(inp.key); } }
+
+async function run(){
+  if(!state.current || anyRunning()) return;
+  const s=state.current;
+  for(const inp of (s.inputs||[])){
+    if(inp.required && !(state.files[inp.key]||[]).length){ alert(`Please add: ${inp.label}`); return; }
   }
   const instr=(el("instr").value||"").trim();
   const anyFiles=(s.inputs||[]).some(i=>(state.files[i.key]||[]).length);
@@ -364,19 +516,43 @@ async function run(){
   fd.append("session_id", state.sessionId);
   fd.append("skill_id", s.id);
   fd.append("instructions", instr);
+  fd.append("model", state.model || state.defaultModel || "");
   for(const inp of (s.inputs||[])){
     for(const file of (state.files[inp.key]||[])) fd.append(inp.key, file, file.name);
   }
 
-  const card=newCard(inputSummary());
-  const statusline=card.querySelector(".statusline");
-  const out=card.querySelector(".out");
-  const status=card.querySelector(".status");
-
-  state.running=true;
   const btn=el("runBtn"); btn.disabled=true; btn.innerHTML=`<span class="spin"></span>Running`;
+  if(state.persistent) return runStore(s, fd);
+  return runSync(s, fd);
+}
 
-  let acc="", started=false; const files=[];
+// Persistent host: server starts a background run, we reconnect to its stream.
+async function runStore(s, fd){
+  let snap;
+  try{
+    const resp=await fetch("/api/run",{method:"POST",body:fd});
+    if(!resp.ok){ const t=await resp.text(); throw new Error(t||("HTTP "+resp.status)); }
+    snap=(await resp.json()).run;
+  }catch(e){
+    alert("Couldn't start the run: "+String(e.message||e)); refreshRunButton(); return;
+  }
+  state.runCount++;
+  ensureCard(snap, state.runCount);
+  clearUploads(s);              // sandbox keeps them server-side for follow-ups
+  refreshRunButton();
+  streamRun(snap.id, 0);
+}
+
+// Serverless: run inside this request. No history/reconnect/stop — keep the tab open.
+async function runSync(s, fd){
+  fd.append("stream", "1");
+  const sel=state.models.find(m=>m.id===(state.model||state.defaultModel))||{};
+  const localId="local_"+(++state.localSeq);
+  const snap={ id:localId, summary:localSummary(s), model_name:sel.name||"", status:"running" };
+  state.runCount++;
+  const card=ensureCard(snap, state.runCount);
+  const sb=card.querySelector(".stop"); if(sb) sb.style.display="none";  // stop unsupported here
+  clearUploads(s);
   try{
     const resp=await fetch("/api/run",{method:"POST",body:fd});
     if(!resp.ok){ const t=await resp.text(); throw new Error(t||("HTTP "+resp.status)); }
@@ -388,42 +564,17 @@ async function run(){
         const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
         const line=chunk.replace(/^data: /,""); if(!line) continue;
         let ev; try{ev=JSON.parse(line);}catch{continue;}
-        if(ev.type==="status"){ statusline.querySelector("span").textContent=ev.text; }
-        else if(ev.type==="text"){
-          if(!started){started=true; statusline.style.display="none"; acc="";}
-          acc+=ev.text; out.innerHTML='<div class="md">'+renderMd(acc)+"</div>";
-        } else if(ev.type==="file"){ files.push(ev); }
-        else if(ev.type==="error"){
-          statusline.style.display="none";
-          out.innerHTML='<div class="md" style="color:var(--accent)">⚠️ '+esc(ev.message)+"</div>";
-          status.className="status err"; status.innerHTML='<span class="dot"></span>Failed';
-        }
+        applyEvent(localId, ev);
       }
     }
+    if(state.cards[localId] && state.cards[localId].status==="running") finalizeCard(localId);
   }catch(e){
-    statusline.style.display="none";
-    out.innerHTML='<div class="md" style="color:var(--accent)">⚠️ '+esc(String(e.message||e))+"</div>";
-    status.className="status err"; status.innerHTML='<span class="dot"></span>Failed';
+    const c=state.cards[localId];
+    if(c){ c.status="error"; c.el.querySelector(".statusline").style.display="none";
+      c.el.querySelector(".out").innerHTML='<div class="md" style="color:var(--accent)">⚠️ '+esc(String(e.message||e))+"</div>";
+      setStatus(c.el, "err", "Failed"); }
   }finally{
-    if(files.length){
-      const w=document.createElement("div"); w.className="files";
-      w.innerHTML=`<div class="flabel">Returned files</div><div class="wrap"></div>`;
-      const wrap=w.querySelector(".wrap");
-      for(const f of files){
-        const a=document.createElement("a"); a.className="file-chip";
-        a.href="/api/files/"+encodeURIComponent(f.file_id); a.setAttribute("download",f.name);
-        a.innerHTML=`<span>📎 ${esc(f.name)}</span><span class="dl">Download</span>`;
-        wrap.appendChild(a);
-      }
-      card.querySelector(".card-body").appendChild(w);
-    }
-    if(!started && !out.querySelector(".md") && !status.classList.contains("err")){
-      out.innerHTML='<div class="md" style="color:var(--muted)">(no text output)</div>';
-    }
-    if(status.classList.contains("running")){ status.className="status done"; status.innerHTML='<span class="dot"></span>Done'; }
-    // clear uploaded files so a re-run starts fresh (the sandbox keeps them for follow-ups)
-    for(const inp of (s.inputs||[])){ state.files[inp.key]=[]; renderFileList(inp.key); }
-    state.running=false; btn.disabled=false; btn.innerHTML="Run ▸";
+    refreshRunButton();
   }
 }
 
@@ -431,7 +582,7 @@ async function clearRuns(){
   if(!state.current) return;
   await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({session_id:state.sessionId,skill_id:state.current.id})});
-  state.runCount=0; runsEl().innerHTML=""; showEmptyHint();
+  state.runCount=0; state.cards={}; runsEl().innerHTML=""; showEmptyHint(); refreshRunButton();
 }
 
 // ---------- reload skills ----------
@@ -441,6 +592,10 @@ el("reloadBtn").onclick = async () => {
     await fetch("/api/reload", { method: "POST" });
     const resp = await fetch("/api/skills"); const data = await resp.json();
     state.skills = data.skills;
+    state.models = data.models || state.models;
+    state.defaultModel = data.default_model || state.defaultModel;
+    state.persistent = data.persistent !== false;
+    if(!state.model || !state.models.find(m=>m.id===state.model)) state.model = state.defaultModel;
     const keepId = state.current && state.skills.find(s => s.id === state.current.id) ? state.current.id : (state.skills[0] && state.skills[0].id);
     renderNav();
     if (keepId && (!state.current || state.current.id !== keepId || !state.skills.find(s=>s.id===state.current.id))) selectSkill(keepId);
@@ -453,6 +608,10 @@ el("reloadBtn").onclick = async () => {
 async function boot(){
   const resp=await fetch("/api/skills"); const data=await resp.json();
   state.skills=data.skills;
+  state.models=data.models||[];
+  state.defaultModel=data.default_model||(state.models[0]&&state.models[0].id);
+  state.model=state.defaultModel;
+  state.persistent=data.persistent!==false;
   if(!data.configured){ const b=el("banner"); b.style.display="block";
     b.textContent="⚠️ No ANTHROPIC_API_KEY configured on the server — runs will not work until it is set."; }
   renderNav();

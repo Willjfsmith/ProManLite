@@ -25,7 +25,10 @@ so you can compare or refine.
 
 ## How it works
 
-Everything runs on **Claude Opus 4.8** over the Claude API:
+Runs go over the Claude API. You pick the model per run from a dropdown —
+**Opus 4.8** (default, recommended for dense/vectorised P&IDs), **Sonnet 5**
+(cheaper & faster), or **Haiku 4.5** (cheapest). The badge next to each option
+and on every run card tells you what you used.
 
 1. Uploaded files go to the Anthropic **Files API**.
 2. Claude is shown the files it can view (vision over PDFs and images) **and**
@@ -36,6 +39,15 @@ Everything runs on **Claude Opus 4.8** over the Claude API:
 
 Follow-up runs reuse the same sandbox, so "also flag the electrical clashes"
 keeps your uploaded files in context.
+
+### Runs survive the tab closing
+
+A run executes on a **background thread on the server**, not inside your browser
+connection. So you can close the tab, switch tools, or lose wifi mid-run and it
+keeps going. When you come back, the tool's **run history** reloads with every
+past run and its **download links** intact, and any run still working reconnects
+and keeps streaming. A **Stop** button cancels a run in flight. History is held
+in memory, so it survives page reloads but not a server restart/redeploy.
 
 ### A note on the engineering skills
 
@@ -52,9 +64,9 @@ attached this way today).
 ## Architecture
 
 ```
-index.html   → single-page UI (upload zones, run cards, no build step)
-main.py      → FastAPI server: serves the UI + a multipart run API (SSE stream)
-runner.py    → Anthropic SDK: uploads, sandbox run, output-file capture
+index.html   → single-page UI (upload zones, model picker, run history, no build step)
+main.py      → FastAPI server: serves the UI + the run API (start / list / stream / stop)
+runner.py    → Anthropic SDK + the server-side run store: uploads, sandbox run, output-file capture
 prompts.py   → loads the skills/ folder into the catalogue
 skills/       → one folder per tool, each a SKILL.md (this is what you edit)
 api/index.py → Vercel entry point (re-exports the app)
@@ -98,13 +110,17 @@ The repo is Vercel-ready (`api/index.py` + `vercel.json`):
   the UI shows a spinner and then the finished result (files + summary) rather
   than streaming text as it's produced. Everything still works; it just isn't
   incremental.
-- **Follow-up runs may not reuse context.** Serverless instances don't keep
-  in-memory state reliably, so treat each run as independent (re-upload files for
-  a follow-up).
+- **No run history, reconnect, or Stop, and follow-ups don't reuse context.**
+  Serverless invocations don't share memory or keep work alive past the response,
+  so the app **auto-detects Vercel and falls back** to running each job inside its
+  request: the run completes and returns its files, but you must keep the tab open
+  until it finishes, and each run is independent (re-upload files for a follow-up).
+  The model picker still works.
 
 If those bite, the **Dockerfile** below runs the exact same app on a persistent
-host (Railway, Render, Fly.io, Cloud Run, a VM) where streaming, long runs, and
-follow-up context all work — no code changes.
+host (Railway, Render, Fly.io, Cloud Run, a VM) where live streaming, long runs,
+follow-up context, **run history that survives closing the tab, reconnecting to a
+run in progress, and the Stop button** all work — no code changes.
 
 ## Run it with Docker
 
@@ -193,7 +209,10 @@ work org via the Anthropic **Skills API** and set `skill_id:` to its id.
 
 ## Cost & tuning
 
-Model, token limits, and beta flags live at the top of `runner.py`. File
-workflows use more tokens than a plain question because Claude reads the files
-and writes/runs code to build the deliverable. Adjust `MODEL` / `MAX_TOKENS`
-there for a cheaper or faster configuration.
+The model is chosen per run in the UI; the catalogue (and which one is the
+default) lives in the `MODELS` / `DEFAULT_MODEL` constants at the top of
+`runner.py` — edit those to add, remove, or re-label options. Token limits and
+beta flags live alongside them. File workflows use more tokens than a plain
+question because Claude reads the files and writes/runs code to build the
+deliverable, so Sonnet or Haiku can be a big saving on simpler jobs; adjust
+`MAX_TOKENS` there too for a cheaper or faster configuration.
