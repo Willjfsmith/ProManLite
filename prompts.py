@@ -94,6 +94,14 @@ def _parse_skill(folder: Path) -> dict | None:
             if norm:
                 inputs.append(norm)
 
+    # Bundled assets: any file in the skill folder other than SKILL.md (e.g.
+    # a scripts/compare.py). These get uploaded into the sandbox at run time so
+    # the skill's instructions can call them.
+    assets = []
+    for p in sorted(folder.rglob("*")):
+        if p.is_file() and p.name != "SKILL.md":
+            assets.append({"name": p.name, "path": str(p)})
+
     return {
         "id": folder.name,
         "name": meta.get("name") or folder.name,
@@ -107,6 +115,7 @@ def _parse_skill(folder: Path) -> dict | None:
         "skill_id": meta.get("skill_id"),
         "order": meta.get("order", 100),
         "system": body.strip(),
+        "assets": assets,
     }
 
 

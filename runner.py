@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator
 
 import anthropic
@@ -164,12 +165,32 @@ class SkillRunner:
                 if vb:
                     view_blocks.append(vb)
 
+        # Upload the skill's bundled assets (helper scripts, templates) into the
+        # sandbox — only when starting a fresh container; a reused one keeps them.
+        asset_names = []
+        assets = skill.get("assets") or []
+        if assets and not conv.container_id:
+            yield {"type": "status", "text": f"Loading {len(assets)} helper file(s)…"}
+            for asset in assets:
+                try:
+                    data = Path(asset["path"]).read_bytes()
+                except OSError:
+                    continue
+                file_id, _kind = self._upload(asset["name"], data)
+                container_blocks.append({"type": "container_upload", "file_id": file_id})
+                asset_names.append(asset["name"])
+
         # Build the user turn: files first, then the manifest + instructions.
         manifest = []
         if review_names:
             manifest.append("Files to review: " + ", ".join(review_names))
         if reference_names:
             manifest.append("Reference files: " + ", ".join(reference_names))
+        if asset_names:
+            manifest.append("Helper scripts available in the working directory: " + ", ".join(asset_names))
+        elif assets:
+            manifest.append("Helper scripts from earlier are still in the working directory: "
+                            + ", ".join(a["name"] for a in assets))
         text = "\n".join(manifest)
         if instructions.strip():
             text += ("\n\n" if text else "") + "Instructions:\n" + instructions.strip()
